@@ -2,9 +2,13 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
-const mongoose = require('mongoose');
 const path = require('path');
 require('dotenv').config();
+
+// 导入配置
+const { connectDB } = require('./config/database');
+const { checkOpenAIConnection } = require('./config/openai');
+const { checkWeatherAPIConnection } = require('./config/weather');
 
 // 导入路由
 const audioRoutes = require('./routes/audioRoutes');
@@ -16,13 +20,8 @@ const healthRoutes = require('./routes/healthRoutes');
 // 创建Express应用
 const app = express();
 
-// 连接MongoDB
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/mumble')
-  .then(() => console.log('MongoDB connected'))
-  .catch(err => {
-    console.error('MongoDB connection error:', err);
-    process.exit(1);
-  });
+// 连接数据库
+connectDB();
 
 // 中间件
 app.use(helmet()); // 安全头
@@ -69,6 +68,26 @@ app.use((req, res) => {
 
 // 启动服务器
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
+
+app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
+  
+  // 检查外部服务连接
+  console.log('Checking external services...');
+  
+  // 检查OpenAI连接
+  const openaiStatus = await checkOpenAIConnection();
+  console.log(`OpenAI API: ${openaiStatus.status}`);
+  if (openaiStatus.error) {
+    console.warn(`OpenAI API Warning: ${openaiStatus.error}`);
+  }
+  
+  // 检查天气API连接
+  const weatherStatus = await checkWeatherAPIConnection();
+  console.log(`Weather API: ${weatherStatus.status}`);
+  if (weatherStatus.error) {
+    console.warn(`Weather API Warning: ${weatherStatus.error}`);
+  }
+  
+  console.log('Server startup complete!');
 });

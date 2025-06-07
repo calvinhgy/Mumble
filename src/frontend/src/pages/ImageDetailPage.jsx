@@ -1,365 +1,275 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import Header from '../components/Header';
 import { fetchImageDetails, deleteImage, exportImage } from '../store/gallerySlice';
-import ErrorMessage from '../components/ErrorMessage';
+import { formatTime, getTimeOfDayLabel } from '../utils/time';
+import { formatCoordinate } from '../utils/geolocation';
 
 const ImageDetailPage = () => {
   const { imageId } = useParams();
   const navigate = useNavigate();
   const dispatch = useDispatch();
   
-  const { currentImage, isLoading, isExporting, error } = useSelector(state => state.gallery);
+  const { currentImage, isLoading, error } = useSelector(state => state.gallery);
   const [showActions, setShowActions] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [showExportOptions, setShowExportOptions] = useState(false);
-  const [showShareSuccess, setShowShareSuccess] = useState(false);
-  const [imageLoaded, setImageLoaded] = useState(false);
-  const [zoomLevel, setZoomLevel] = useState(1);
-  const [panPosition, setPanPosition] = useState({ x: 0, y: 0 });
-  const [isPanning, setIsPanning] = useState(false);
-  const [startPanPosition, setStartPanPosition] = useState({ x: 0, y: 0 });
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   
-  const imageRef = useRef(null);
-  
-  // 加载图片详情
   useEffect(() => {
     if (imageId) {
       dispatch(fetchImageDetails(imageId));
     }
-    
-    return () => {
-      // 重置缩放和平移状态
-      setZoomLevel(1);
-      setPanPosition({ x: 0, y: 0 });
-    };
   }, [dispatch, imageId]);
   
-  // 处理删除
-  const handleDelete = () => {
-    dispatch(deleteImage(imageId)).then(() => {
-      navigate('/gallery');
-    });
+  const handleBack = () => {
+    navigate('/gallery');
   };
   
-  // 处理导出
-  const handleExport = (format = 'jpg', quality = 90) => {
-    dispatch(exportImage({ imageId, format, quality }));
-    setShowExportOptions(false);
-  };
-  
-  // 处理分享
   const handleShare = async () => {
+    if (!currentImage) return;
+    
     try {
-      if (navigator.share && currentImage) {
+      if (navigator.share) {
         await navigator.share({
-          title: 'Mumble创作',
-          text: '查看我用Mumble创作的图片',
+          title: 'Mumble生成的图片',
+          text: currentImage.audioText || '我的创意图片',
           url: window.location.href
         });
       } else {
-        // 复制链接
+        // 复制链接到剪贴板
         await navigator.clipboard.writeText(window.location.href);
-        setShowShareSuccess(true);
-        setTimeout(() => setShowShareSuccess(false), 2000);
+        // 显示提示
+        alert('链接已复制到剪贴板');
       }
-    } catch (err) {
-      console.error('分享失败:', err);
+    } catch (error) {
+      console.error('分享失败:', error);
     }
   };
   
-  // 处理双击缩放
-  const handleDoubleClick = (e) => {
-    if (zoomLevel === 1) {
-      // 放大到2倍，并将点击位置作为中心
-      setZoomLevel(2);
-      
-      if (imageRef.current) {
-        const rect = imageRef.current.getBoundingClientRect();
-        const offsetX = (e.clientX - rect.left) / rect.width;
-        const offsetY = (e.clientY - rect.top) / rect.height;
-        
-        // 计算平移位置，使点击位置居中
-        const newPanX = (0.5 - offsetX) * rect.width;
-        const newPanY = (0.5 - offsetY) * rect.height;
-        
-        setPanPosition({ x: newPanX, y: newPanY });
-      }
-    } else {
-      // 重置缩放和平移
-      setZoomLevel(1);
-      setPanPosition({ x: 0, y: 0 });
-    }
-  };
-  
-  // 处理平移开始
-  const handlePanStart = (e) => {
-    if (zoomLevel > 1) {
-      setIsPanning(true);
-      setStartPanPosition({
-        x: e.clientX - panPosition.x,
-        y: e.clientY - panPosition.y
-      });
-    }
-  };
-  
-  // 处理平移移动
-  const handlePanMove = (e) => {
-    if (isPanning && zoomLevel > 1) {
-      setPanPosition({
-        x: e.clientX - startPanPosition.x,
-        y: e.clientY - startPanPosition.y
-      });
-    }
-  };
-  
-  // 处理平移结束
-  const handlePanEnd = () => {
-    setIsPanning(false);
-  };
-  
-  // 格式化创建时间
-  const formatCreatedAt = (dateString) => {
-    if (!dateString) return '';
+  const handleExport = async () => {
+    if (!currentImage || isExporting) return;
     
-    const date = new Date(dateString);
-    return date.toLocaleDateString([], { 
-      year: 'numeric', 
-      month: 'long', 
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
+    setIsExporting(true);
+    
+    try {
+      const result = await dispatch(exportImage({
+        imageId: currentImage.imageId,
+        format: 'jpg',
+        quality: 90
+      }));
+      
+      if (result.payload) {
+        // 创建下载链接
+        const url = URL.createObjectURL(result.payload);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `mumble-${currentImage.imageId}.jpg`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+    } catch (error) {
+      console.error('导出失败:', error);
+      alert('导出失败，请稍后重试');
+    } finally {
+      setIsExporting(false);
+    }
   };
   
-  if (isLoading || !imageLoaded) {
+  const handleDelete = async () => {
+    if (!currentImage || isDeleting) return;
+    
+    const confirmed = window.confirm('确定要删除这张图片吗？此操作无法撤销。');
+    if (!confirmed) return;
+    
+    setIsDeleting(true);
+    
+    try {
+      await dispatch(deleteImage(currentImage.imageId));
+      navigate('/gallery');
+    } catch (error) {
+      console.error('删除失败:', error);
+      alert('删除失败，请稍后重试');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+  
+  const handleImageLoad = () => {
+    // 图片加载完成后的处理
+  };
+  
+  const handleImageError = () => {
+    console.error('图片加载失败');
+  };
+  
+  if (isLoading) {
     return (
-      <div className="min-h-screen bg-black">
-        <Header title="" showBackButton={true} showGalleryButton={false} />
-        <div className="flex items-center justify-center h-screen">
-          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-white"></div>
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-primary mx-auto mb-4"></div>
+          <p className="text-neutral">加载中...</p>
         </div>
       </div>
     );
   }
   
-  if (error) {
+  if (error || !currentImage) {
     return (
-      <div className="min-h-screen bg-black">
-        <Header title="错误" showBackButton={true} showGalleryButton={false} />
+      <div className="min-h-screen bg-background flex flex-col">
+        <Header title="图片详情" showBackButton={true} onBack={handleBack} />
         <div className="flex-1 flex items-center justify-center">
-          <ErrorMessage 
-            error={error}
-            onRetry={() => dispatch(fetchImageDetails(imageId))}
-            onCancel={() => navigate('/gallery')}
-          />
-        </div>
-      </div>
-    );
-  }
-  
-  if (!currentImage) {
-    return (
-      <div className="min-h-screen bg-black">
-        <Header title="未找到" showBackButton={true} showGalleryButton={false} />
-        <div className="flex flex-col items-center justify-center h-screen text-white p-4">
-          <p className="mb-4">未找到图片</p>
-          <button 
-            className="btn-secondary"
-            onClick={() => navigate('/gallery')}
-          >
-            返回图库
-          </button>
+          <div className="text-center">
+            <p className="text-red-500 mb-4">{error || '图片不存在'}</p>
+            <button 
+              className="btn-primary"
+              onClick={handleBack}
+            >
+              返回图库
+            </button>
+          </div>
         </div>
       </div>
     );
   }
   
   return (
-    <div className="min-h-screen bg-black">
-      <Header title="" showBackButton={true} showGalleryButton={false} />
+    <div className="min-h-screen bg-background flex flex-col">
+      <Header 
+        title="图片详情" 
+        showBackButton={true} 
+        onBack={handleBack}
+        rightAction={
+          <button
+            className="p-2 rounded-full hover:bg-gray-100 transition-colors"
+            onClick={() => setShowActions(!showActions)}
+          >
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
+            </svg>
+          </button>
+        }
+      />
+      
+      {/* 操作菜单 */}
+      {showActions && (
+        <div className="absolute top-16 right-4 bg-white rounded-lg shadow-lg z-50 min-w-32">
+          <button
+            className="w-full px-4 py-3 text-left hover:bg-gray-50 flex items-center"
+            onClick={handleShare}
+          >
+            <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z" />
+            </svg>
+            分享
+          </button>
+          <button
+            className="w-full px-4 py-3 text-left hover:bg-gray-50 flex items-center"
+            onClick={handleExport}
+            disabled={isExporting}
+          >
+            <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            {isExporting ? '导出中...' : '导出'}
+          </button>
+          <button
+            className="w-full px-4 py-3 text-left hover:bg-gray-50 text-red-500 flex items-center"
+            onClick={handleDelete}
+            disabled={isDeleting}
+          >
+            <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+            {isDeleting ? '删除中...' : '删除'}
+          </button>
+        </div>
+      )}
+      
+      {/* 点击其他地方关闭菜单 */}
+      {showActions && (
+        <div 
+          className="fixed inset-0 z-40"
+          onClick={() => setShowActions(false)}
+        />
+      )}
       
       {/* 图片展示 */}
-      <div 
-        className="relative overflow-hidden"
-        onClick={() => setShowActions(!showActions)}
-        onDoubleClick={handleDoubleClick}
-        onMouseDown={handlePanStart}
-        onMouseMove={handlePanMove}
-        onMouseUp={handlePanEnd}
-        onMouseLeave={handlePanEnd}
-        onTouchStart={(e) => handlePanStart(e.touches[0])}
-        onTouchMove={(e) => handlePanMove(e.touches[0])}
-        onTouchEnd={handlePanEnd}
-      >
-        <div 
-          ref={imageRef}
-          className="transition-transform duration-200"
-          style={{
-            transform: `scale(${zoomLevel}) translate(${panPosition.x / zoomLevel}px, ${panPosition.y / zoomLevel}px)`,
-            transformOrigin: 'center'
-          }}
-        >
-          <img 
-            src={currentImage.imageUrl} 
-            alt="Generated artwork" 
-            className="w-full h-auto"
-            onLoad={() => setImageLoaded(true)}
+      <div className="flex-1 flex flex-col">
+        <div className="flex-1 flex items-center justify-center p-4">
+          <img
+            src={currentImage.imageUrl}
+            alt="Generated artwork"
+            className="max-w-full max-h-full object-contain rounded-lg shadow-lg"
+            onLoad={handleImageLoad}
+            onError={handleImageError}
           />
         </div>
         
-        {/* 缩放指示器 */}
-        {zoomLevel > 1 && (
-          <div className="absolute top-4 left-4 bg-black bg-opacity-50 text-white px-2 py-1 rounded-full text-xs">
-            {Math.round(zoomLevel * 100)}%
-          </div>
-        )}
-        
-        {/* 信息卡片 */}
-        <div className={`absolute bottom-0 left-0 right-0 bg-black bg-opacity-50 text-white p-4 transition-all duration-300 ${
-          showActions ? 'opacity-100' : 'opacity-0'
-        }`}>
-          <div className="mb-2">
-            <p className="text-sm opacity-80">{formatCreatedAt(currentImage.createdAt)}</p>
-            <p className="text-sm opacity-80">{currentImage.environment?.location?.placeName}</p>
+        {/* 图片信息 */}
+        <div className="bg-white border-t border-gray-200 p-4">
+          {/* 创建时间 */}
+          <div className="mb-4">
+            <h3 className="text-sm font-medium text-gray-500 mb-1">创建时间</h3>
+            <p className="text-base">
+              {formatTime(currentImage.createdAt)} 
+              {currentImage.environment?.time?.timeOfDay && (
+                <span className="text-gray-500 ml-2">
+                  ({getTimeOfDayLabel(currentImage.environment.time.timeOfDay)})
+                </span>
+              )}
+            </p>
           </div>
           
-          {currentImage.audioText && (
-            <div className="mt-4 p-3 bg-white bg-opacity-10 rounded-lg">
-              <p className="text-sm italic">"{currentImage.audioText}"</p>
+          {/* 位置信息 */}
+          {currentImage.environment?.location && (
+            <div className="mb-4">
+              <h3 className="text-sm font-medium text-gray-500 mb-1">位置</h3>
+              <p className="text-base">
+                {currentImage.environment.location.placeName}
+                {currentImage.environment.location.country && 
+                  `, ${currentImage.environment.location.country}`
+                }
+              </p>
             </div>
           )}
           
-          {/* 操作按钮 */}
-          <div className="flex justify-around mt-4">
-            <button 
-              className="flex flex-col items-center text-xs"
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowExportOptions(!showExportOptions);
-              }}
-              disabled={isExporting}
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-              </svg>
-              {isExporting ? '导出中...' : '导出'}
-            </button>
-            
-            <button 
-              className="flex flex-col items-center text-xs"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleShare();
-              }}
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
-              </svg>
-              分享
-            </button>
-            
-            <button 
-              className="flex flex-col items-center text-xs text-red-400"
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowDeleteConfirm(true);
-              }}
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-              删除
-            </button>
-          </div>
+          {/* 天气信息 */}
+          {currentImage.environment?.weather && (
+            <div className="mb-4">
+              <h3 className="text-sm font-medium text-gray-500 mb-1">天气</h3>
+              <p className="text-base">
+                {currentImage.environment.weather.condition}
+                {currentImage.environment.weather.temperature && 
+                  `, ${currentImage.environment.weather.temperature}°C`
+                }
+              </p>
+            </div>
+          )}
+          
+          {/* 原始录音文本 */}
+          {currentImage.audioText && (
+            <div className="mb-4">
+              <h3 className="text-sm font-medium text-gray-500 mb-1">录音内容</h3>
+              <p className="text-base italic text-gray-700">
+                "{currentImage.audioText}"
+              </p>
+            </div>
+          )}
+          
+          {/* AI提示词 */}
+          {currentImage.prompt && (
+            <div>
+              <h3 className="text-sm font-medium text-gray-500 mb-1">AI提示词</h3>
+              <p className="text-sm text-gray-600 leading-relaxed">
+                {currentImage.prompt}
+              </p>
+            </div>
+          )}
         </div>
       </div>
-      
-      {/* 导出选项对话框 */}
-      {showExportOptions && (
-        <div 
-          className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50 p-4"
-          onClick={() => setShowExportOptions(false)}
-        >
-          <div 
-            className="bg-white rounded-xl p-4 max-w-xs w-full"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 className="text-lg font-medium mb-4">选择导出格式</h3>
-            
-            <div className="space-y-3">
-              <button 
-                className="w-full py-3 border border-neutral border-opacity-20 rounded-lg flex items-center justify-between px-4"
-                onClick={() => handleExport('jpg', 90)}
-              >
-                <span>JPG格式 (高质量)</span>
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-primary" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                </svg>
-              </button>
-              
-              <button 
-                className="w-full py-3 border border-neutral border-opacity-20 rounded-lg flex items-center justify-between px-4"
-                onClick={() => handleExport('png')}
-              >
-                <span>PNG格式 (无损)</span>
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                </svg>
-              </button>
-            </div>
-            
-            <button 
-              className="w-full mt-4 py-2 text-neutral"
-              onClick={() => setShowExportOptions(false)}
-            >
-              取消
-            </button>
-          </div>
-        </div>
-      )}
-      
-      {/* 删除确认对话框 */}
-      {showDeleteConfirm && (
-        <div 
-          className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50 p-4"
-          onClick={() => setShowDeleteConfirm(false)}
-        >
-          <div 
-            className="bg-white rounded-xl p-4 max-w-xs w-full"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 className="text-lg font-medium mb-2">确认删除</h3>
-            <p className="text-neutral text-sm mb-4">
-              确定要删除这张图片吗？此操作无法撤销。
-            </p>
-            <div className="flex justify-end space-x-2">
-              <button 
-                className="px-4 py-2 text-neutral"
-                onClick={() => setShowDeleteConfirm(false)}
-              >
-                取消
-              </button>
-              <button 
-                className="px-4 py-2 bg-red-500 text-white rounded-lg"
-                onClick={handleDelete}
-              >
-                删除
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      
-      {/* 分享成功提示 */}
-      {showShareSuccess && (
-        <div className="fixed bottom-10 left-0 right-0 flex justify-center">
-          <div className="bg-black bg-opacity-70 text-white px-4 py-2 rounded-full text-sm">
-            链接已复制到剪贴板
-          </div>
-        </div>
-      )}
     </div>
   );
 };
