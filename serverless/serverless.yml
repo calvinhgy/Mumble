@@ -1,0 +1,170 @@
+service: mumble-serverless
+frameworkVersion: '>=3.0.0'
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  region: us-east-1
+  stage: ${opt:stage, 'dev'}
+  
+  environment:
+    STAGE: ${self:provider.stage}
+    REGION: ${self:provider.region}
+    DYNAMODB_TABLE: ${self:service}-${self:provider.stage}
+    IMAGES_BUCKET: ${self:service}-images-${self:provider.stage}
+    AUDIO_BUCKET: ${self:service}-audio-${self:provider.stage}
+    OPENAI_API_KEY: ${env:OPENAI_API_KEY, 'placeholder'}
+    OPENWEATHER_API_KEY: ${env:OPENWEATHER_API_KEY, 'placeholder'}
+  
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:Query
+            - dynamodb:Scan
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+          Resource: "arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.DYNAMODB_TABLE}"
+        - Effect: Allow
+          Action:
+            - s3:GetObject
+            - s3:PutObject
+            - s3:DeleteObject
+          Resource: 
+            - "arn:aws:s3:::${self:provider.environment.IMAGES_BUCKET}/*"
+            - "arn:aws:s3:::${self:provider.environment.AUDIO_BUCKET}/*"
+
+functions:
+  # 健康检查
+  health:
+    handler: functions/health/handler.main
+    events:
+      - http:
+          path: /health
+          method: get
+          cors: true
+
+  # 音频上传预签名URL
+  getUploadUrl:
+    handler: functions/audio/upload.getUploadUrl
+    events:
+      - http:
+          path: /audio/upload-url
+          method: post
+          cors: true
+
+  # 音频处理触发器
+  processAudio:
+    handler: functions/audio/process.main
+    timeout: 300
+    memorySize: 1024
+    events:
+      - s3:
+          bucket: ${self:provider.environment.AUDIO_BUCKET}
+          event: s3:ObjectCreated:*
+
+  # 图像生成
+  generateImage:
+    handler: functions/image/generate.main
+    timeout: 300
+    memorySize: 1024
+    events:
+      - http:
+          path: /generate
+          method: post
+          cors: true
+
+  # 获取天气数据
+  getWeather:
+    handler: functions/weather/handler.main
+    events:
+      - http:
+          path: /weather
+          method: post
+          cors: true
+
+  # 图库管理
+  getImages:
+    handler: functions/image/gallery.getImages
+    events:
+      - http:
+          path: /images
+          method: get
+          cors: true
+
+  deleteImage:
+    handler: functions/image/gallery.deleteImage
+    events:
+      - http:
+          path: /images/{id}
+          method: delete
+          cors: true
+
+resources:
+  Resources:
+    # DynamoDB表
+    MumbleTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.DYNAMODB_TABLE}
+        AttributeDefinitions:
+          - AttributeName: PK
+            AttributeType: S
+          - AttributeName: SK
+            AttributeType: S
+          - AttributeName: GSI1PK
+            AttributeType: S
+          - AttributeName: GSI1SK
+            AttributeType: S
+        KeySchema:
+          - AttributeName: PK
+            KeyType: HASH
+          - AttributeName: SK
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: GSI1
+            KeySchema:
+              - AttributeName: GSI1PK
+                KeyType: HASH
+              - AttributeName: GSI1SK
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+        BillingMode: PAY_PER_REQUEST
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+
+    # S3存储桶 - 音频文件
+    AudioBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:provider.environment.AUDIO_BUCKET}
+        CorsConfiguration:
+          CorsRules:
+            - AllowedHeaders: ['*']
+              AllowedMethods: [GET, PUT, POST, DELETE]
+              AllowedOrigins: ['*']
+              MaxAge: 3000
+
+    # S3存储桶 - 图像文件
+    ImagesBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:provider.environment.IMAGES_BUCKET}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: false
+          BlockPublicPolicy: false
+          IgnorePublicAcls: false
+          RestrictPublicBuckets: false
+
+plugins:
+  - serverless-offline
+  - serverless-webpack
+
+custom:
+  webpack:
+    webpackConfig: ./webpack.config.js
+    includeModules: true
